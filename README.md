@@ -47,4 +47,4 @@ Foundry Tube allows GMs to play music, ambience, or videos from YouTube directly
 *   Search functionality utilizes a CORS proxy to scrape results without requiring a personal Google API Key.
 
 ## License
-MIT License.
+GNU GENERAL PUBLIC LICENSE
