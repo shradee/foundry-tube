@@ -1,0 +1,113 @@
+<div class="foundry-tube-content">
+    <div class="control-bar">
+        <!-- LEFT: Playback -->
+        <div class="playback-controls">
+            <button type="button" class="icon-btn" data-action="playPrev" title="Prev" {{#unless isGM}}disabled{{/unless}}>
+                <i class="fas fa-step-backward"></i>
+            </button>
+            <button type="button" class="icon-btn" data-action="togglePlayback" title="Play/Pause" {{#unless isGM}}disabled{{/unless}}>
+                <i class="fas fa-play"></i>
+            </button>
+            <button type="button" class="icon-btn" data-action="playNext" title="Next" {{#unless isGM}}disabled{{/unless}}>
+                <i class="fas fa-step-forward"></i>
+            </button>
+            <button type="button" class="icon-btn {{#if isLooping}}active{{/if}}" data-action="toggleLoop" title="Loop" {{#unless isGM}}disabled{{/unless}}>
+                <i class="fas fa-repeat"></i>
+            </button>
+        </div>
+
+        <!-- CENTER: Title + Seeker / Input -->
+        <div class="center-controls">
+            <!-- MODE 1: Player Info -->
+            <div id="view-seeker">
+                <div class="track-info">
+                    <div class="track-title" id="track-title-text"><span>No Video</span></div>
+                </div>
+                <div class="seeker-group">
+                    <span id="current-time">0:00</span>
+                    <input type="range" class="video-seeker" min="0" max="100" value="0" step="1" {{#unless isGM}}disabled{{/unless}}>
+                    <span id="duration-time">0:00</span>
+                </div>
+            </div>
+
+            <!-- MODE 2: Input (GM Only) -->
+            {{#if isGM}}
+            <div class="smart-input-group" id="view-input" style="display: none;">
+                <input type="text" name="smartInput" placeholder="Link, YT Playlist or Search..." autocomplete="off">
+                <button type="button" class="icon-btn" data-action="executeSmartInput" title="Go">
+                    <i class="fas fa-arrow-right"></i>
+                </button>
+            </div>
+            {{/if}}
+        </div>
+
+        <!-- RIGHT: Menu -->
+        <div class="right-controls">
+            <button type="button" class="icon-btn {{#if showQueue}}active{{/if}}" data-action="toggleQueue" title="Playlist">
+                <i class="fas fa-list"></i>
+            </button>
+
+            {{#if isGM}}
+            <button type="button" class="icon-btn toggle-mode-btn" data-action="toggleInputMode" title="Add/Search">
+                <i class="fas fa-plus"></i>
+            </button>
+            {{/if}}
+
+            <div class="volume-group">
+                <input type="range" name="volume" min="0" max="100" value="{{volume}}">
+            </div>
+        </div>
+    </div>
+
+    <!-- VIDEO AREA -->
+    <div class="video-container">
+        <!-- QUEUE OVERLAY -->
+        <div id="queue-overlay" class="overlay-panel hidden">
+            <!-- HEADER: Presets Toolbar -->
+            {{#if isGM}}
+            <div class="preset-toolbar">
+                <select id="preset-select">
+                    <option value="" disabled selected>Load Preset...</option>
+                    {{#each savedPlaylists}}
+                        <option value="{{@key}}">{{@key}} ({{this.length}})</option>
+                    {{/each}}
+                </select>
+                <div class="preset-actions">
+                    <button type="button" data-action="loadPreset" title="Load Selected"><i class="fas fa-upload"></i></button>
+                    <button type="button" data-action="savePreset" title="Save Current Queue"><i class="fas fa-save"></i></button>
+                    <button type="button" data-action="deletePreset" title="Delete Selected"><i class="fas fa-trash"></i></button>
+                </div>
+            </div>
+            {{/if}}
+
+            <div class="panel-header">
+                <span>Current Queue (<span id="playlist-count">0</span>)</span>
+                {{#if isGM}}
+                <div style="display:flex; gap:5px;">
+                    <button type="button" class="clear-btn" data-action="importFromClipboard" title="Import YT Playlist URL"><i class="fab fa-youtube"></i> Import</button>
+                    <button type="button" class="clear-btn" data-action="clearQueue">Clear</button>
+                </div>
+                {{/if}}
+            </div>
+            <div class="panel-content" id="playlist-container">
+                <div class="empty-msg">Playlist is empty</div>
+            </div>
+        </div>
+
+        <!-- SEARCH OVERLAY -->
+        <div id="search-overlay" class="overlay-panel hidden">
+            <div class="panel-header">
+                <span>Search Results</span>
+                <button type="button" class="clear-btn" data-action="closeSearch">Close</button>
+            </div>
+            <div class="panel-content" id="search-container">
+                <div class="empty-msg">Enter text above to search...</div>
+            </div>
+        </div>
+
+        <div class="player-wrapper">
+            <div id="player-shield" class="{{#if isGM}}gm-shield{{else}}player-shield-active{{/if}}"></div>
+            <div id="foundry-tube-player-target"></div>
+        </div>
+    </div>
+</div>
