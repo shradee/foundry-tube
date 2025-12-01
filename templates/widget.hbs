@@ -1,12 +1,9 @@
 <div class="foundry-tube-content">
     <div class="tabs-content-wrapper">
         {{#each tabs}}
-        <!-- Основной контейнер инстанса -->
         <div class="tube-instance {{#if this.isActive}}active{{/if}}" data-tab-index="{{this.index}}">
 
-            <!-- ПАНЕЛЬ УПРАВЛЕНИЯ -->
             <div class="control-bar">
-                <!-- ЛЕВО: Кнопки плеера -->
                 <div class="playback-controls">
                     <button type="button" class="icon-btn" data-action="playPrev" title="Prev" {{#unless ../isGM}}disabled{{/unless}}><i class="fas fa-step-backward"></i></button>
                     <button type="button" class="icon-btn" data-action="togglePlayback" title="Play/Pause" {{#unless ../isGM}}disabled{{/unless}}><i class="fas fa-play"></i></button>
@@ -14,9 +11,7 @@
                     <button type="button" class="icon-btn {{#if this.isLooping}}active{{/if}}" data-action="toggleLoop" title="Loop" {{#unless ../isGM}}disabled{{/unless}}><i class="fas fa-repeat"></i></button>
                 </div>
 
-                <!-- ЦЕНТР: Название и Полоса прокрутки -->
                 <div class="center-controls">
-                    <!-- Режим Просмотра -->
                     <div id="view-seeker-{{this.index}}" class="view-seeker">
                         <div class="track-info">
                             <div class="track-title" id="track-title-text-{{this.index}}"><span>{{this.title}}</span></div>
@@ -27,7 +22,6 @@
                             <span id="duration-time-{{this.index}}">0:00</span>
                         </div>
                     </div>
-                    <!-- Режим Ввода (Для ГМа) -->
                     {{#if ../isGM}}
                     <div class="smart-input-group" id="view-input-{{this.index}}" style="display: none;">
                         <input type="text" name="smartInput" data-tab="{{this.index}}" placeholder="Tab {{this.humanIndex}}: Link or Search..." autocomplete="off">
@@ -36,7 +30,6 @@
                     {{/if}}
                 </div>
 
-                <!-- ПРАВО: Меню, Громкость и Каналы -->
                 <div class="right-controls">
                     <div class="right-btns">
                         <button type="button" class="icon-btn" data-action="toggleQueue" title="Playlist"><i class="fas fa-list"></i></button>
@@ -46,11 +39,9 @@
                     </div>
 
                     <div class="vol-channel-group">
-                        <!-- Громкость -->
                         <div class="volume-group">
                             <input type="range" name="volume" data-tab="{{this.index}}" min="0" max="100" value="{{this.volume}}">
                         </div>
-                        <!-- 5 МАЛЕНЬКИХ КНОПОК -->
                         <div class="channel-switcher">
                             {{#each ../tabs}}
                             <button type="button" class="channel-btn {{#if this.isActive}}active{{/if}}" data-action="switchTab" data-target="{{this.index}}">{{this.humanIndex}}</button>
@@ -60,11 +51,8 @@
                 </div>
             </div>
 
-            <!-- ЗОНА ВИДЕО И ОВЕРЛЕЕВ -->
             <div class="video-container">
-                <!-- Очередь -->
                 <div id="queue-overlay-{{this.index}}" class="overlay-panel hidden">
-                    <!-- Прогресс бар импорта -->
                     <div class="queue-progress" id="queue-progress-{{this.index}}">
                         <div class="queue-progress-bar"></div>
                     </div>
@@ -95,13 +83,11 @@
                     <div class="panel-content playlist-container" id="playlist-container-{{this.index}}"></div>
                 </div>
 
-                <!-- Поиск -->
                 <div id="search-overlay-{{this.index}}" class="overlay-panel hidden">
                     <div class="panel-header"><span>Search</span><button type="button" class="clear-btn" data-action="closeSearch">Close</button></div>
                     <div class="panel-content search-container" id="search-container-{{this.index}}"></div>
                 </div>
 
-                <!-- Само видео -->
                 <div class="player-wrapper">
                     <div id="player-shield-{{this.index}}" class="{{#if ../isGM}}gm-shield{{else}}player-shield-active{{/if}}"></div>
                     <div id="foundry-tube-player-{{this.index}}" class="yt-target"></div>

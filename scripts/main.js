@@ -43,7 +43,8 @@ class FoundryTubeApp extends HandlebarsApplicationMixin(ApplicationV2) {
             loadPreset: FoundryTubeApp.prototype._onLoadPreset,
             deletePreset: FoundryTubeApp.prototype._onDeletePreset,
             importFromClipboard: FoundryTubeApp.prototype._onImportFromClipboard,
-            switchTab: FoundryTubeApp.prototype._onSwitchTab
+            switchTab: FoundryTubeApp.prototype._onSwitchTab,
+            manualSync: FoundryTubeApp.prototype._onManualSync
         }
     };
 
@@ -159,7 +160,49 @@ class FoundryTubeApp extends HandlebarsApplicationMixin(ApplicationV2) {
                 }
 
                 const shield = container.querySelector(`#player-shield-${i}`);
-                if (shield) shield.onclick = (e) => { e.stopPropagation(); this.togglePlayback(i); };
+                if (shield) {
+                    if (game.user.isGM) {
+                        shield.style.cursor = "pointer";
+                        shield.onclick = (e) => { e.stopPropagation(); this.togglePlayback(i); };
+                    } else {
+                        shield.style.cursor = "default";
+                        shield.onclick = (e) => { e.preventDefault(); e.stopPropagation(); };
+                    }
+                }
+                if (!game.user.isGM) {
+                    const playBtn = container.querySelector('[data-action="togglePlayback"]');
+
+                    if (playBtn && playBtn.parentNode) {
+                        const controlsContainer = playBtn.parentNode;
+
+                        if (!controlsContainer.querySelector('[data-action="manualSync"]')) {
+
+                            const prevBtn = container.querySelector('[data-action="playPrev"]');
+                            const loopBtn = container.querySelector('[data-action="toggleLoop"]');
+                            if (loopBtn) loopBtn.style.display = 'none';
+                            const nextBtn = container.querySelector('[data-action="playNext"]');
+
+                            if (prevBtn) prevBtn.style.display = 'none';
+                            if (playBtn) playBtn.style.display = 'none';
+                            if (nextBtn) nextBtn.style.display = 'none';
+
+                            const syncBtn = document.createElement('button');
+                            syncBtn.type = "button";
+                            syncBtn.dataset.action = "manualSync";
+                            syncBtn.innerHTML = '<i class="fas fa-sync"></i> Sync';
+                            syncBtn.title = "Resync video with GM";
+
+                            syncBtn.className = playBtn.className;
+                            syncBtn.style.width = "auto";
+                            syncBtn.style.padding = "0 10px";
+                            syncBtn.style.borderRadius = "5px";
+                            syncBtn.style.fontSize = "12px";
+
+                            controlsContainer.appendChild(syncBtn);
+                        }
+                    }
+                }
+
             }
 
             if (this.isCustomMinimized) {
@@ -236,7 +279,7 @@ class FoundryTubeApp extends HandlebarsApplicationMixin(ApplicationV2) {
 
     _onTogglePlayback() { this.togglePlayback(this.activeTab); }
     _onToggleLoop(e, t) { this.toggleLoop(this.activeTab, t); }
-    _onToggleInputMode(e, t) { this.toggleInputMode(this.activeTab); }
+    _onToggleInputMode(e, t) { this.toggleInputMode(this.activeTab, t); }
     _onExecuteSmartInput(e, t, forced) { this.executeSmartInput(forced ?? this.activeTab); }
     _onToggleQueue(e, t) {
         const o=this.element.querySelector(`#queue-overlay-${this.activeTab}`), s=this.element.querySelector(`#search-overlay-${this.activeTab}`);
@@ -245,6 +288,10 @@ class FoundryTubeApp extends HandlebarsApplicationMixin(ApplicationV2) {
     _onClearQueue() { Dialog.confirm({ title: "Clear Playlist", content: "<p>Clear playlist?</p>", yes: () => { this.tabsState[this.activeTab].playlist=[]; this.tabsState[this.activeTab].currentIndex=-1; this._syncPlaylistState(this.activeTab); this.updateTrackTitle(this.activeTab, "No Video"); }}); }
     _onPlayNextAction() { this.playNext(this.activeTab); }
     _onPlayPrevAction() { this.playPrev(this.activeTab); }
+    _onManualSync() {
+        ui.notifications.info("Syncing with GM...");
+        this.emitSocket("requestSync", { tabId: this.activeTab });
+    }
     _onCloseSearch() { this.element.querySelector(`#search-overlay-${this.activeTab}`)?.classList.add('hidden'); }
     _onSavePreset() { const tab=this.activeTab; if(this.tabsState[tab].playlist.length===0) return ui.notifications.warn("Queue empty"); new Dialog({title:"Save", content:`<form><div class="form-group"><label>Name</label><input type="text" name="name" style="background:#fff;color:#000"/></div></form>`, buttons:{save:{label:"Save", callback:async(h)=>{const n=h.find('input').val().trim(); if(!n)return; const s=game.settings.get(MODULE_ID,'savedPlaylists'); s[n]=this.tabsState[tab].playlist; await game.settings.set(MODULE_ID,'savedPlaylists',s); this.render();}}}}).render(true); }
     async _onLoadPreset() { const tab=this.activeTab, s=this.element.querySelector(`.preset-select[data-tab="${tab}"]`), n=s.value, sv=game.settings.get(MODULE_ID,'savedPlaylists'); if(sv[n]) { this.tabsState[tab].playlist=[...sv[n]]; this.tabsState[tab].currentIndex=0; await this._syncPlaylistState(tab); if(this.tabsState[tab].playlist.length>0) { this.broadcastState(tab, this.tabsState[tab].playlist[0].id, 0, true); this.updateTrackTitle(tab, this.tabsState[tab].playlist[0].title); } } }
@@ -252,8 +299,46 @@ class FoundryTubeApp extends HandlebarsApplicationMixin(ApplicationV2) {
     _onImportFromClipboard() { const tab=this.activeTab; new Dialog({title:"Import", content:`<form><div class="form-group"><label>URL</label><input type="text" name="url" style="background:#fff;color:#000"/></div></form>`, buttons:{import:{label:"Import", callback:async(h)=>{const u=h.find('input').val().trim(); await this._handleImport(tab, u);}}}}).render(true); }
 
     toggleLoop(tab, target) { this.tabsState[tab].isLooping = !this.tabsState[tab].isLooping; if(target) target.classList.toggle('active'); this.emitSocket("syncLoop", {isLooping: this.tabsState[tab].isLooping, tabId:tab}); }
-    toggleInputMode(tab) { this.tabsState[tab].isInputMode = !this.tabsState[tab].isInputMode; const s=this.element.querySelector(`#view-seeker-${tab}`), i=this.element.querySelector(`#view-input-${tab}`); if(!s||!i)return; if(this.tabsState[tab].isInputMode){s.style.display='none';i.style.display='flex';setTimeout(()=>this.element.querySelector(`#view-input-${tab} input`)?.focus(),50);}else{s.style.display='block';i.style.display='none';this.element.querySelector(`#search-overlay-${tab}`)?.classList.add('hidden');} }
-    async executeSmartInput(tab) { const i=this.element.querySelector(`#view-input-${tab} input`); if(!i)return; const v=i.value.trim(); if(!v)return; i.value=""; i.blur(); await this._handleImport(tab, v); }
+    toggleInputMode(tab, btn) {
+        this.tabsState[tab].isInputMode = !this.tabsState[tab].isInputMode;
+
+        if (!btn) btn = this.element.querySelector(`.tube-instance[data-tab-index="${tab}"] [data-action="toggleInputMode"]`);
+
+        if (btn) {
+            const icon = btn.querySelector('i');
+            if (this.tabsState[tab].isInputMode) {
+                btn.classList.add('active');
+                if (icon) icon.className = "fas fa-times";
+            } else {
+                btn.classList.remove('active');
+                if (icon) icon.className = "fas fa-plus";
+            }
+        }
+
+        const s = this.element.querySelector(`#view-seeker-${tab}`);
+        const i = this.element.querySelector(`#view-input-${tab}`);
+        if (!s || !i) return;
+
+        if (this.tabsState[tab].isInputMode) {
+            s.style.display = 'none';
+            i.style.display = 'flex';
+            setTimeout(() => this.element.querySelector(`#view-input-${tab} input`)?.focus(), 50);
+        } else {
+            s.style.display = 'block';
+            i.style.display = 'none';
+            this.element.querySelector(`#search-overlay-${tab}`)?.classList.add('hidden');
+        }
+    }
+
+    async executeSmartInput(tab) {
+        const i = this.element.querySelector(`#view-input-${tab} input`);
+        if (!i) return;
+        const v = i.value.trim();
+        if (!v) return;
+        i.value = "";
+        i.blur();
+        await this._handleImport(tab, v);
+    }
 
     async _syncPlaylistState(tab) {
         if(game.user.isGM) {
@@ -600,53 +685,125 @@ Hooks.once('ready', () => {
     window.tubeApp = tubeApp;
     const m = game.modules.get(MODULE_ID);
     if (m) m.api = { open: () => tubeApp.render({ force: true }) };
-    setTimeout(() => tubeApp.render(true), 500);
-    game.socket.on(SOCKET_NAME, (p) => {
-        if (p.userId === game.user.id || !tubeApp.rendered) return;
-        const tab = p.tabId ?? 0;
-        if (p.action === "syncPlaylist") {
-            tubeApp.tabsState[tab].playlist = p.playlist;
-            tubeApp.tabsState[tab].currentIndex = p.index;
-            tubeApp._renderPlaylist(tab);
-            if(tubeApp.tabsState[tab].currentIndex>=0 && tubeApp.tabsState[tab].playlist[tubeApp.tabsState[tab].currentIndex]) {
-                tubeApp.updateTrackTitle(tab, tubeApp.tabsState[tab].playlist[tubeApp.tabsState[tab].currentIndex].title);
+
+    setTimeout(() => {
+        tubeApp.render(true);
+        if (tubeApp.element) tubeApp.element.style.display = 'none';
+    }, 1000);
+
+        game.socket.on(SOCKET_NAME, (p) => {
+            if (p.userId === game.user.id || !tubeApp.rendered) return;
+            const tab = p.tabId ?? 0;
+
+            if (p.action === "syncPlaylist") {
+                tubeApp.tabsState[tab].playlist = p.playlist;
+                tubeApp.tabsState[tab].currentIndex = p.index;
+                tubeApp._renderPlaylist(tab);
+                if(tubeApp.tabsState[tab].currentIndex>=0 && tubeApp.tabsState[tab].playlist[tubeApp.tabsState[tab].currentIndex]) {
+                    tubeApp.updateTrackTitle(tab, tubeApp.tabsState[tab].playlist[tubeApp.tabsState[tab].currentIndex].title);
+                }
             }
-        }
-        else if (p.action === "syncLoop") {
-            tubeApp.tabsState[tab].isLooping = p.isLooping;
-            const btn = tubeApp.element.querySelector(`.tube-instance[data-tab-index="${tab}"] [data-action="toggleLoop"]`);
-            if(btn) p.isLooping ? btn.classList.add('active') : btn.classList.remove('active');
-        }
-        else if (p.action === "syncState") {
-            if (p.videoId !== tubeApp.tabsState[tab].localVideoId) tubeApp.loadVideo(tab, p.videoId);
-            const autoplay = game.settings.get(MODULE_ID, 'autoplayStart');
-            if (p.isPlaying) {
-                if (tubeApp.initialLoad && !autoplay) { setTimeout(() => { tubeApp.playVideo(tab, p.time); tubeApp.pauseVideo(tab); }, 500); }
-                else { setTimeout(() => tubeApp.playVideo(tab, p.time), 500); }
-            } else {
-                setTimeout(() => { tubeApp.playVideo(tab, p.time); tubeApp.pauseVideo(tab); }, 500);
+            else if (p.action === "syncLoop") {
+                tubeApp.tabsState[tab].isLooping = p.isLooping;
+                const btn = tubeApp.element.querySelector(`.tube-instance[data-tab-index="${tab}"] [data-action="toggleLoop"]`);
+                if(btn) p.isLooping ? btn.classList.add('active') : btn.classList.remove('active');
             }
-            if (tubeApp.initialLoad) tubeApp.initialLoad = false;
-        }
-        else if (p.action === "play") tubeApp.playVideo(tab, p.time);
-        else if (p.action === "pause") tubeApp.pauseVideo(tab);
-        else if (p.action === "requestSync" && game.user.isGM) {
-            const global = game.settings.get(MODULE_ID, 'tabsState') || {};
-            for(let i=0; i<5; i++) {
-                const s = global[i] || {};
-                const state = { action: "syncState", tabId: i, videoId: s.videoId||"", time: tubeApp.players[i]?.getCurrentTime() || 0, isPlaying: tubeApp.players[i]?.getPlayerState()===1, isLooping: tubeApp.tabsState[i].isLooping };
-                game.socket.emit(SOCKET_NAME, state);
-                game.socket.emit(SOCKET_NAME, { action: "syncPlaylist", tabId: i, playlist: tubeApp.tabsState[i].playlist, index: tubeApp.tabsState[i].currentIndex });
-                game.socket.emit(SOCKET_NAME, { action: "syncLoop", tabId: i, isLooping: tubeApp.tabsState[i].isLooping });
+            else if (p.action === "syncState") {
+                if (p.videoId !== tubeApp.tabsState[tab].localVideoId) {
+                    tubeApp.loadVideo(tab, p.videoId);
+                }
+
+                const autoplay = game.settings.get(MODULE_ID, 'autoplayStart');
+                const delay = tubeApp.initialLoad ? 1500 : 100;
+
+                if (p.isPlaying) {
+                    let seekTime = p.time;
+                    if (tubeApp.initialLoad || delay > 500) {
+                        const networkLag = p.sentAt ? (Date.now() - p.sentAt) / 1000 : 0;
+                        const waitLag = delay / 1000;
+                        seekTime += (networkLag + waitLag);
+                    }
+
+                    if (tubeApp.initialLoad && !autoplay) {
+                        setTimeout(() => {
+                            tubeApp.playVideo(tab, seekTime);
+                            setTimeout(() => tubeApp.pauseVideo(tab), 200);
+                        }, delay);
+                    }
+                    else {
+                        setTimeout(() => tubeApp.playVideo(tab, seekTime), delay);
+                    }
+                } else {
+                    setTimeout(() => {
+                        tubeApp.playVideo(tab, p.time);
+                        setTimeout(() => tubeApp.pauseVideo(tab), 200);
+                    }, delay);
+                }
+
+                if (tubeApp.initialLoad) setTimeout(() => { tubeApp.initialLoad = false; }, 2000);
             }
-        }
-    });
+            else if (p.action === "play") tubeApp.playVideo(tab, p.time);
+            else if (p.action === "pause") tubeApp.pauseVideo(tab);
+            else if (p.action === "requestSync" && game.user.isGM) {
+                const global = game.settings.get(MODULE_ID, 'tabsState') || {};
+                for(let i=0; i<5; i++) {
+                    const s = global[i] || {};
+                    const player = tubeApp.players[i];
+                    const currentTime = (player && typeof player.getCurrentTime === 'function') ? player.getCurrentTime() : 0;
+                    const isPlaying = (player && typeof player.getPlayerState === 'function') ? (player.getPlayerState() === 1) : false;
+
+                    game.socket.emit(SOCKET_NAME, {
+                        action: "syncState",
+                        tabId: i,
+                        videoId: s.videoId || "",
+                        time: currentTime,
+                        isPlaying: isPlaying,
+                        isLooping: tubeApp.tabsState[i].isLooping,
+                        sentAt: Date.now()
+                    });
+
+                    game.socket.emit(SOCKET_NAME, { action: "syncPlaylist", tabId: i, playlist: tubeApp.tabsState[i].playlist, index: tubeApp.tabsState[i].currentIndex });
+                    game.socket.emit(SOCKET_NAME, { action: "syncLoop", tabId: i, isLooping: tubeApp.tabsState[i].isLooping });
+                }
+            }
+        });
 });
-Hooks.on('getSceneControlButtons', (c) => {
-    if (!c || !Array.isArray(c)) return;
-    const t = c.find(cc => cc.name === "token");
-    if(t) t.tools.push({ name: "foundry-tube", title: "Tube", icon: "fas fa-tv", onClick: () => {
-        if (tubeApp.isCustomMinimized) tubeApp.minimize();
-                       tubeApp.render({ force: true });
-    }, button: true });
+Hooks.on('getSceneControlButtons', (controls) => {
+    const toolConfig = {
+        name: "tube-toggle",
+        title: "Tube Player",
+        icon: "fas fa-tv",
+        visible: true,
+        button: true,
+        onChange: () => {
+            const app = window.tubeApp;
+            if (!app) return;
+
+            if (!app.element) {
+                app.render({ force: true });
+                return;
+            }
+
+            if (app.element.style.display === "none") {
+                app.element.style.display = "";
+                app.bringToFront();
+            } else {
+                app.element.style.display = "none";
+            }
+        }
+    };
+
+    if (Array.isArray(controls)) {
+        const token = controls.find(c => c.name === 'token');
+        if (token) token.tools.push(toolConfig);
+    } else {
+        const tokenLayer = controls.token || controls.tokens;
+        if (tokenLayer) {
+            if (Array.isArray(tokenLayer.tools)) {
+                tokenLayer.tools.push(toolConfig);
+            } else {
+                tokenLayer.tools["tube-toggle"] = toolConfig;
+            }
+        }
+    }
 });
