@@ -1,3 +1,5 @@
+https://img.shields.io/github/downloads/shradee/foundry-tube/total
+
 # Foundry Tube 📺
 
 A compact, feature-rich, and synchronized YouTube player for Foundry VTT. 
