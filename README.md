@@ -1,4 +1,4 @@
-https://img.shields.io/github/downloads/shradee/foundry-tube/total
+![Downloads](https://img.shields.io/github/downloads/shradee/foundry-tube/total)
 
 # Foundry Tube 📺
 
