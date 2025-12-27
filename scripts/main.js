@@ -23,6 +23,8 @@ class FoundryTubeApp extends HandlebarsApplicationMixin(ApplicationV2) {
         this.progressIntervals = [null, null, null, null, null];
         this._resizeObserver = null;
         this.initialLoad = true;
+        this.isMuted = false;
+        this.preMuteVolume = 50;
     }
 
     static DEFAULT_OPTIONS = {
@@ -44,7 +46,8 @@ class FoundryTubeApp extends HandlebarsApplicationMixin(ApplicationV2) {
             deletePreset: FoundryTubeApp.prototype._onDeletePreset,
             importFromClipboard: FoundryTubeApp.prototype._onImportFromClipboard,
             switchTab: FoundryTubeApp.prototype._onSwitchTab,
-            manualSync: FoundryTubeApp.prototype._onManualSync
+            manualSync: FoundryTubeApp.prototype._onManualSync,
+            toggleMute: FoundryTubeApp.prototype._onToggleMute
         }
     };
 
@@ -110,14 +113,27 @@ class FoundryTubeApp extends HandlebarsApplicationMixin(ApplicationV2) {
             if (!this._resizeObserver) {
                 this._resizeObserver = new ResizeObserver((entries) => {
                     for (const entry of entries) {
+                        if (entry.contentRect.width > 50 && this.element.style.display !== 'none') {
+                            this.savedWidth = entry.contentRect.width;
+                            this.position.width = entry.contentRect.width;
 
-                        this.savedWidth = entry.contentRect.width;
-
-                        this.position.width = entry.contentRect.width;
+                            const i = this.activeTab;
+                            const el = this.element.querySelector(`#track-title-text-${i}`);
+                            if (el) {
+                                const span = el.querySelector('span');
+                                if (span) this.updateTrackTitle(i, span.innerText);
+                            }
+                        }
                     }
                 });
                 this._resizeObserver.observe(this.element);
             }
+
+            const vol = game.settings.get(MODULE_ID, 'clientVolume');
+            if (vol === 0) this.isMuted = true;
+            this.element.querySelectorAll('.volume-mute-btn i').forEach(icon => {
+                 icon.className = (vol === 0) ? "fas fa-volume-mute" : "fas fa-volume-up";
+            });
 
             for(let i=0; i<5; i++) {
                 this._renderPlaylist(i);
@@ -142,7 +158,14 @@ class FoundryTubeApp extends HandlebarsApplicationMixin(ApplicationV2) {
 
                 const volInput = container.querySelector('input[name="volume"]');
                 if (volInput) {
-                    volInput.oninput = (e) => { if (this.players[i]?.setVolume) this.players[i].setVolume(parseInt(e.target.value)); };
+                    volInput.oninput = (e) => {
+                        const val = parseInt(e.target.value);
+                        if (this.players[i]?.setVolume) this.players[i].setVolume(val);
+                        if (val > 0 && this.isMuted) {
+                             this.isMuted = false;
+                             this.element.querySelectorAll('.volume-mute-btn i').forEach(ic => ic.className = "fas fa-volume-up");
+                        }
+                    };
                     volInput.onchange = async (e) => { await game.settings.set(MODULE_ID, 'clientVolume', parseInt(e.target.value)); };
                 }
 
@@ -209,6 +232,9 @@ class FoundryTubeApp extends HandlebarsApplicationMixin(ApplicationV2) {
                 this.element.classList.add('custom-minimized');
                 this.setPosition({ height: 58, width: this.savedWidth });
             }
+            const enabled = game.settings.get(MODULE_ID, 'enableTransparency');
+            const op = enabled ? game.settings.get(MODULE_ID, 'minimizedOpacity') / 100 : 1;
+            this.element.style.setProperty('--minimized-opacity', op);
         } catch (err) { console.error(err); }
     }
 
@@ -275,6 +301,11 @@ class FoundryTubeApp extends HandlebarsApplicationMixin(ApplicationV2) {
             if (btnTarget === idx) btn.classList.add('active');
             else btn.classList.remove('active');
         });
+        const el = this.element.querySelector(`#track-title-text-${idx}`);
+        if (el) {
+            const span = el.querySelector('span');
+            if (span) this.updateTrackTitle(idx, span.innerText);
+        }
     }
 
     _onTogglePlayback() { this.togglePlayback(this.activeTab); }
@@ -288,6 +319,27 @@ class FoundryTubeApp extends HandlebarsApplicationMixin(ApplicationV2) {
     _onClearQueue() { Dialog.confirm({ title: "Clear Playlist", content: "<p>Clear playlist?</p>", yes: () => { this.tabsState[this.activeTab].playlist=[]; this.tabsState[this.activeTab].currentIndex=-1; this._syncPlaylistState(this.activeTab); this.updateTrackTitle(this.activeTab, "No Video"); }}); }
     _onPlayNextAction() { this.playNext(this.activeTab); }
     _onPlayPrevAction() { this.playPrev(this.activeTab); }
+    async _onToggleMute(event, target) {
+        const currentVol = game.settings.get(MODULE_ID, 'clientVolume');
+        
+        if (this.isMuted) {
+            this.isMuted = false;
+            const newVol = this.preMuteVolume || 50;
+            await game.settings.set(MODULE_ID, 'clientVolume', newVol);
+        } else {
+            if (currentVol > 0) this.preMuteVolume = currentVol;
+            this.isMuted = true;
+            await game.settings.set(MODULE_ID, 'clientVolume', 0);
+        }
+        
+        const vol = game.settings.get(MODULE_ID, 'clientVolume');
+        this.element.querySelectorAll('input[name="volume"]').forEach(i => i.value = vol);
+        this.players.forEach(p => { if (p?.setVolume) p.setVolume(vol); });
+        
+        this.element.querySelectorAll('.volume-mute-btn i').forEach(icon => {
+            icon.className = this.isMuted ? "fas fa-volume-mute" : "fas fa-volume-up";
+        });
+    }
     _onManualSync() {
         ui.notifications.info("Syncing with GM...");
         this.emitSocket("requestSync", { tabId: this.activeTab });
@@ -564,7 +616,35 @@ class FoundryTubeApp extends HandlebarsApplicationMixin(ApplicationV2) {
         } catch(e){ return[]; }
     }
 
-    async _fetchMetadata(id){let m={id,title:`Video ${id}`,author:"YouTube",duration:"",thumb:`https://i.ytimg.com/vi/${id}/mqdefault.jpg`};try{const r=await fetch(`https://noembed.com/embed?url=https://www.youtube.com/watch?v=${id}`);if(r.ok){const d=await r.json();if(d.title)m.title=d.title;if(d.author_name)m.author=d.author_name;if(d.thumbnail_url)m.thumb=d.thumbnail_url;}}catch(e){}return m;}
+    async _fetchMetadata(id) {
+        let m = { id, title: `Video ${id}`, author: "YouTube", duration: "", thumb: `https://i.ytimg.com/vi/${id}/mqdefault.jpg` };
+        try {
+            const t = await this._fetchText(`https://www.youtube.com/watch?v=${id}`);
+            if (t) {
+                const mat = t.match(/ytInitialPlayerResponse\s*=\s*({.+?});/);
+                if (mat) {
+                    const data = JSON.parse(mat[1]);
+                    const d = data.videoDetails;
+                    if (d) {
+                        m.title = d.title || m.title;
+                        m.author = d.author || m.author;
+                        if (d.lengthSeconds) m.duration = this._fmt(parseInt(d.lengthSeconds));
+                        return m;
+                    }
+                }
+            }
+        } catch (e) { }
+        try {
+            const r = await fetch(`https://noembed.com/embed?url=https://www.youtube.com/watch?v=${id}`);
+            if (r.ok) {
+                const d = await r.json();
+                if (d.title) m.title = d.title;
+                if (d.author_name) m.author = d.author_name;
+                if (d.thumbnail_url) m.thumb = d.thumbnail_url;
+            }
+        } catch (e) { }
+        return m;
+    }
     _extractVideoID(url) { if(!url) return null; const m = url.match(/(?:youtu\.be\/|v\/|u\/\w\/|embed\/|watch\?v=|&v=)([^#&?]*).*/); return m && m[1].length===11 ? m[1] : (url.length === 11 ? url : null); }
     _extractPlaylistID(url) { const m = url.match(/[&?]list=([a-zA-Z0-9_-]+)/); return m ? m[1] : null; }
 
@@ -673,7 +753,10 @@ Hooks.once('init', () => {
     game.settings.register(MODULE_ID, 'tabsState', { scope: 'world', config: false, type: Object, default: {} });
     game.settings.register(MODULE_ID, 'clientVolume', { scope: 'client', config: false, type: Number, default: 50 });
     game.settings.register(MODULE_ID, 'savedPlaylists', { scope: 'world', config: false, type: Object, default: {} });
-    game.settings.register(MODULE_ID, 'autoplayStart', { name: "Autoplay on World Join", hint: "If disabled, video will not start automatically when you log in.", scope: 'client', config: true, type: Boolean, default: true });
+    game.settings.register(MODULE_ID, 'autoplayStart', { name: "Auto play on Startup", hint: "If disabled, video will not start automatically when you log in.", scope: 'client', config: true, type: Boolean, default: false });
+    game.settings.register(MODULE_ID, 'hideOnStartup', { name: "Hide on Startup", hint: "If enabled, the player widget will be hidden when you load the world.", scope: 'client', config: true, type: Boolean, default: true });
+    game.settings.register(MODULE_ID, 'enableTransparency', { name: "Enable Transparency", hint: "If enabled, minimized player becomes transparent when not hovered.", scope: 'client', config: true, type: Boolean, default: true, onChange: () => { const app = window.tubeApp; if(app && app.element) { const op = game.settings.get(MODULE_ID, 'enableTransparency') ? game.settings.get(MODULE_ID, 'minimizedOpacity')/100 : 1; app.element.style.setProperty('--minimized-opacity', op); } } });
+    game.settings.register(MODULE_ID, 'minimizedOpacity', { name: "Minimized Opacity (%)", hint: "Opacity of the player when minimized and not hovered (0-100).", scope: 'client', config: true, type: Number, default: 50, range: { min: 0, max: 100, step: 5 }, onChange: v => { const el = document.getElementById('foundry-tube-app'); if(el && game.settings.get(MODULE_ID, 'enableTransparency')) el.style.setProperty('--minimized-opacity', v / 100); } });
 
     if (!document.getElementById('yt-api-script')) {
         const tag = document.createElement('script'); tag.id = 'yt-api-script'; tag.src = "https://www.youtube.com/iframe_api";
@@ -686,9 +769,9 @@ Hooks.once('ready', () => {
     const m = game.modules.get(MODULE_ID);
     if (m) m.api = { open: () => tubeApp.render({ force: true }) };
 
-    setTimeout(() => {
-        tubeApp.render(true);
-        if (tubeApp.element) tubeApp.element.style.display = 'none';
+    setTimeout(async () => {
+        await tubeApp.render({ force: true });
+        if (game.settings.get(MODULE_ID, 'hideOnStartup') && tubeApp.element) tubeApp.element.style.display = 'none';
     }, 1000);
 
         game.socket.on(SOCKET_NAME, (p) => {
