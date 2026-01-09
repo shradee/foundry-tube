@@ -1,5 +1,7 @@
 ![Downloads](https://img.shields.io/github/downloads/shradee/foundry-tube/total)
 
+[![Support modules I create on](https://img.shields.io/badge/Support_modules_I_create_on-Ko--fi-F16061?style=for-the-badge&logo=ko-fi&logoColor=white)](https://ko-fi.com/shrade_himself)
+
 # Foundry Tube 📺
 
 A compact, feature-rich, and synchronized YouTube player for Foundry VTT. 
