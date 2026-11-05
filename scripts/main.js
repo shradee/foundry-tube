@@ -2,10 +2,10 @@ const MODULE_ID = 'foundry-tube';
 const SOCKET_NAME = `module.${MODULE_ID}`;
 const { ApplicationV2, HandlebarsApplicationMixin } = foundry.applications.api;
 
-const PROXIES = [
-    (url) => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(url)}`,
-    (url) => `https://api.allorigins.win/get?url=${encodeURIComponent(url)}`,
-    (url) => `https://corsproxy.io/?url=${encodeURIComponent(url)}`
+const FETCH_SOURCES = [
+    (url) => ({ url: `https://r.jina.ai/${url}`, options: { headers: { 'X-Return-Format': 'html' } } }),
+    (url) => ({ url: `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(url)}`, options: {} }),
+    (url) => ({ url: `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`, options: {} })
 ];
 
 class FoundryTubeApp extends HandlebarsApplicationMixin(ApplicationV2) {
@@ -25,6 +25,27 @@ class FoundryTubeApp extends HandlebarsApplicationMixin(ApplicationV2) {
         this.initialLoad = true;
         this.isMuted = false;
         this.preMuteVolume = 50;
+        // Local cache of the GM-controlled per-tab mix volumes, kept in sync via settings/socket.
+        this.tabVolumes = [100, 100, 100, 100, 100];
+    }
+
+    /** Effective volume sent to the YT player: GM's per-tab mix multiplied by the player's own master volume.
+     *  Pass masterOverride while the slider is being dragged, so we don't depend on the (debounced) stored setting. */
+    _getEffectiveVolume(tab, masterOverride) {
+        const mix = this.tabVolumes[tab] ?? 100;
+        const master = masterOverride ?? game.settings.get(MODULE_ID, 'clientVolume');
+        return Math.round((mix * master) / 100);
+    }
+
+    /** Apply the effective volume to a single tab's player, if it exists. */
+    _applyVolume(tab, masterOverride) {
+        const p = this.players[tab];
+        if (p?.setVolume) p.setVolume(this._getEffectiveVolume(tab, masterOverride));
+    }
+
+    /** Recompute and apply effective volume to every tab (used when the master volume changes). */
+    _applyAllVolumes(masterOverride) {
+        for (let i = 0; i < 5; i++) this._applyVolume(i, masterOverride);
     }
 
     static DEFAULT_OPTIONS = {
@@ -78,10 +99,46 @@ class FoundryTubeApp extends HandlebarsApplicationMixin(ApplicationV2) {
         return super.close(options);
     }
 
+    _isLegacyPresets(raw) {
+        return Object.values(raw || {}).some(v => Array.isArray(v));
+    }
+
+    async _getPresets() {
+        if (!game.user.isGM) return {};
+        const raw = game.settings.get(MODULE_ID, 'savedPlaylists') || {};
+        if (this._isLegacyPresets(raw)) {
+            // Legacy format was a single flat {name: list} object shared by all GMs.
+            // Give every current GM a copy instead of collapsing it under whichever
+            // GM happens to open the panel first (that previously deleted everyone
+            // else's presets).
+            const legacy = {};
+            for (const [name, list] of Object.entries(raw)) {
+                if (Array.isArray(list)) legacy[name] = list;
+            }
+            const migrated = {};
+            for (const user of game.users) {
+                if (user.isGM) migrated[user.id] = foundry.utils.deepClone(legacy);
+            }
+            await game.settings.set(MODULE_ID, 'savedPlaylists', migrated);
+            return migrated[game.user.id] || {};
+        }
+        return raw[game.user.id] || {};
+    }
+
+    async _savePresets(presets) {
+        if (!game.user.isGM) return;
+        let raw = game.settings.get(MODULE_ID, 'savedPlaylists') || {};
+        if (this._isLegacyPresets(raw)) raw = {};
+        raw[game.user.id] = presets;
+        await game.settings.set(MODULE_ID, 'savedPlaylists', raw);
+    }
+
     async _prepareContext(options) {
         const globalState = game.settings.get(MODULE_ID, 'tabsState') || {};
-        const savedPlaylists = game.settings.get(MODULE_ID, 'savedPlaylists');
-        const volume = game.settings.get(MODULE_ID, 'clientVolume');
+        const savedPlaylists = await this._getPresets();
+        const masterVolume = game.settings.get(MODULE_ID, 'clientVolume');
+        const storedTabVolumes = game.settings.get(MODULE_ID, 'tabVolumes') || {};
+        for (let i = 0; i < 5; i++) this.tabVolumes[i] = storedTabVolumes[i] ?? 100;
         const tabsData = [];
         for(let i=0; i<5; i++) {
             if (!this.tabsState[i].loaded) {
@@ -93,6 +150,8 @@ class FoundryTubeApp extends HandlebarsApplicationMixin(ApplicationV2) {
                 this.tabsState[i].isShuffling = s.isShuffling || false;
                 this.tabsState[i].loaded = true;
             }
+            // GM sees/controls the per-tab mix fader; players see/control their own master volume (same value on every tab).
+            const volume = game.user.isGM ? this.tabVolumes[i] : masterVolume;
             tabsData.push({
                 index: i, humanIndex: i + 1, isActive: (i === this.activeTab),
                           title: this.tabsState[i].playlist[this.tabsState[i].currentIndex]?.title || "No Video",
@@ -131,11 +190,21 @@ class FoundryTubeApp extends HandlebarsApplicationMixin(ApplicationV2) {
                 this._resizeObserver.observe(this.element);
             }
 
-            const vol = game.settings.get(MODULE_ID, 'clientVolume');
-            if (vol === 0) this.isMuted = true;
-            this.element.querySelectorAll('.volume-mute-btn i').forEach(icon => {
-                icon.className = (vol === 0) ? "fas fa-volume-mute" : "fas fa-volume-up";
-            });
+            if (game.user.isGM) {
+                // Each tab's mute icon reflects that tab's own mix volume.
+                for (let i = 0; i < 5; i++) {
+                    const mix = this.tabVolumes[i] ?? 100;
+                    const icon = this.element.querySelector(`.tube-instance[data-tab-index="${i}"] .volume-mute-btn i`);
+                    if (icon) icon.className = (mix === 0) ? "fas fa-volume-mute" : "fas fa-volume-up";
+                }
+                this.isMuted = (this.tabVolumes[this.activeTab] ?? 100) === 0;
+            } else {
+                const vol = game.settings.get(MODULE_ID, 'clientVolume');
+                if (vol === 0) this.isMuted = true;
+                this.element.querySelectorAll('.volume-mute-btn i').forEach(icon => {
+                    icon.className = (vol === 0) ? "fas fa-volume-mute" : "fas fa-volume-up";
+                });
+            }
 
             for(let i=0; i<5; i++) {
                 this._renderPlaylist(i);
@@ -160,21 +229,56 @@ class FoundryTubeApp extends HandlebarsApplicationMixin(ApplicationV2) {
 
                 const volInput = container.querySelector('input[name="volume"]');
                 if (volInput) {
-                    volInput.oninput = (e) => {
-                        const val = parseInt(e.target.value);
-                        if (this.players[i]?.setVolume) this.players[i].setVolume(val);
-                        if (val > 0 && this.isMuted) {
-                            this.isMuted = false;
-                            this.element.querySelectorAll('.volume-mute-btn i').forEach(ic => ic.className = "fas fa-volume-up");
-                        }
-                    };
-                    volInput.onchange = async (e) => { await game.settings.set(MODULE_ID, 'clientVolume', parseInt(e.target.value)); };
+                    const updateVolFill = v => volInput.style.setProperty('--range-progress', `${v}%`);
+                    updateVolFill(parseInt(volInput.value) || 0);
+
+                    if (game.user.isGM) {
+                        // GM: this slider is the per-tab mix fader. Only affects tab i, for everyone.
+                        volInput.oninput = (e) => {
+                            const val = parseInt(e.target.value);
+                            updateVolFill(val);
+                            this.tabVolumes[i] = val;
+                            this._applyVolume(i);
+                            if (val > 0 && this.isMuted) {
+                                this.isMuted = false;
+                                this.element.querySelectorAll('.volume-mute-btn i').forEach(ic => ic.className = "fas fa-volume-up");
+                            }
+                        };
+                        volInput.onchange = async (e) => {
+                            const val = parseInt(e.target.value);
+                            const stored = game.settings.get(MODULE_ID, 'tabVolumes') || {};
+                            stored[i] = val;
+                            await game.settings.set(MODULE_ID, 'tabVolumes', stored);
+                            this.emitSocket("syncVolume", { tabId: i, mix: val });
+                        };
+                    } else {
+                        // Player: this slider is their personal master volume, shared across all 5 tabs.
+                        volInput.oninput = (e) => {
+                            const val = parseInt(e.target.value);
+                            this.element.querySelectorAll('input[name="volume"]').forEach(inp => {
+                                inp.value = val;
+                                inp.style.setProperty('--range-progress', `${val}%`);
+                            });
+                            // Use the live slider value directly instead of reading back the (debounced) setting,
+                            // otherwise the volume lags/stutters while dragging.
+                            this._applyAllVolumes(val);
+                            if (val > 0 && this.isMuted) {
+                                this.isMuted = false;
+                                this.element.querySelectorAll('.volume-mute-btn i').forEach(ic => ic.className = "fas fa-volume-up");
+                            }
+                        };
+                        volInput.onchange = async (e) => { await game.settings.set(MODULE_ID, 'clientVolume', parseInt(e.target.value)); };
+                    }
                 }
 
                 const seeker = container.querySelector('.video-seeker');
                 if (seeker && game.user.isGM) {
                     const newSeeker = seeker.cloneNode(true);
                     seeker.parentNode.replaceChild(newSeeker, seeker);
+                    newSeeker.addEventListener('input', () => {
+                        const d = parseFloat(newSeeker.max) || 0;
+                        newSeeker.style.setProperty('--range-progress', d ? `${(parseFloat(newSeeker.value) / d) * 100}%` : '0%');
+                    });
                     newSeeker.addEventListener('change', () => {
                         const val = parseFloat(newSeeker.value);
                         if (this.players[i]?.seekTo) {
@@ -274,12 +378,10 @@ class FoundryTubeApp extends HandlebarsApplicationMixin(ApplicationV2) {
 
         if (this.tabsState[tab].isShuffling) {
             if (playlistLength <= 2) {
-                // List is too short, just play the next track, looping from start
                 this.tabsState[tab].currentIndex = (currentIndex + 1 % playlistLength);
                 return true;
             }
 
-            // Advance the index by a random number lower than track count - 1, so we don't loop back to the same track
             const advanceBy = Math.floor(Math.random() * playlistLength - 1)
             this.tabsState[tab].currentIndex = (currentIndex + advanceBy) % playlistLength;
             return true;
@@ -350,6 +452,36 @@ class FoundryTubeApp extends HandlebarsApplicationMixin(ApplicationV2) {
     _onPlayNextAction() { this.playNext(this.activeTab); }
     _onPlayPrevAction() { this.playPrev(this.activeTab); }
     async _onToggleMute(event, target) {
+        if (game.user.isGM) {
+            // GM: mute toggles the mix fader of the active tab only.
+            const tab = this.activeTab;
+            const currentMix = this.tabVolumes[tab] ?? 100;
+
+            if (this.isMuted) {
+                this.isMuted = false;
+                this.tabVolumes[tab] = this.preMuteVolume || 100;
+            } else {
+                if (currentMix > 0) this.preMuteVolume = currentMix;
+                this.isMuted = true;
+                this.tabVolumes[tab] = 0;
+            }
+
+            const stored = game.settings.get(MODULE_ID, 'tabVolumes') || {};
+            stored[tab] = this.tabVolumes[tab];
+            await game.settings.set(MODULE_ID, 'tabVolumes', stored);
+            this.emitSocket("syncVolume", { tabId: tab, mix: this.tabVolumes[tab] });
+            this._applyVolume(tab);
+
+            const container = this.element.querySelector(`.tube-instance[data-tab-index="${tab}"]`);
+            const input = container?.querySelector('input[name="volume"]');
+            if (input) { input.value = this.tabVolumes[tab]; input.style.setProperty('--range-progress', `${this.tabVolumes[tab]}%`); }
+            container?.querySelectorAll('.volume-mute-btn i').forEach(icon => {
+                icon.className = this.isMuted ? "fas fa-volume-mute" : "fas fa-volume-up";
+            });
+            return;
+        }
+
+        // Player: mute toggles their personal master volume, shared across all tabs.
         const currentVol = game.settings.get(MODULE_ID, 'clientVolume');
 
         if (this.isMuted) {
@@ -363,8 +495,8 @@ class FoundryTubeApp extends HandlebarsApplicationMixin(ApplicationV2) {
         }
 
         const vol = game.settings.get(MODULE_ID, 'clientVolume');
-        this.element.querySelectorAll('input[name="volume"]').forEach(i => i.value = vol);
-        this.players.forEach(p => { if (p?.setVolume) p.setVolume(vol); });
+        this.element.querySelectorAll('input[name="volume"]').forEach(i => { i.value = vol; i.style.setProperty('--range-progress', `${vol}%`); });
+        this._applyAllVolumes();
 
         this.element.querySelectorAll('.volume-mute-btn i').forEach(icon => {
             icon.className = this.isMuted ? "fas fa-volume-mute" : "fas fa-volume-up";
@@ -375,9 +507,9 @@ class FoundryTubeApp extends HandlebarsApplicationMixin(ApplicationV2) {
         this.emitSocket("requestSync", { tabId: this.activeTab });
     }
     _onCloseSearch() { this.element.querySelector(`#search-overlay-${this.activeTab}`)?.classList.add('hidden'); }
-    _onSavePreset() { const tab=this.activeTab; if(this.tabsState[tab].playlist.length===0) return ui.notifications.warn("Queue empty"); new Dialog({title:"Save", content:`<form><div class="form-group"><label>Name</label><input type="text" name="name" style="background:#fff;color:#000"/></div></form>`, buttons:{save:{label:"Save", callback:async(h)=>{const n=h.find('input').val().trim(); if(!n)return; const s=game.settings.get(MODULE_ID,'savedPlaylists'); s[n]=this.tabsState[tab].playlist; await game.settings.set(MODULE_ID,'savedPlaylists',s); this.render();}}}}).render(true); }
-    async _onLoadPreset() { const tab=this.activeTab, s=this.element.querySelector(`.preset-select[data-tab="${tab}"]`), n=s.value, sv=game.settings.get(MODULE_ID,'savedPlaylists'); if(sv[n]) { this.tabsState[tab].playlist=[...sv[n]]; this.tabsState[tab].currentIndex=0; await this._syncPlaylistState(tab); if(this.tabsState[tab].playlist.length>0) { this.broadcastState(tab, this.tabsState[tab].playlist[0].id, 0, true); this.updateTrackTitle(tab, this.tabsState[tab].playlist[0].title); } } }
-    async _onDeletePreset() { const tab=this.activeTab, s=this.element.querySelector(`.preset-select[data-tab="${tab}"]`), n=s.value; if(!n)return; const sv=game.settings.get(MODULE_ID,'savedPlaylists'); delete sv[n]; await game.settings.set(MODULE_ID,'savedPlaylists',sv); this.render(); }
+    _onSavePreset() { if(!game.user.isGM) return; const tab=this.activeTab; if(this.tabsState[tab].playlist.length===0) return ui.notifications.warn("Queue empty"); new Dialog({title:"Save", content:`<form><div class="form-group"><label>Name</label><input type="text" name="name" style="background:#fff;color:#000"/></div></form>`, buttons:{save:{label:"Save", callback:async(h)=>{const n=h.find('input').val().trim(); if(!n)return; const presets=await this._getPresets(); presets[n]=this.tabsState[tab].playlist; await this._savePresets(presets); this.render();}}}}).render(true); }
+    async _onLoadPreset() { if(!game.user.isGM) return; const tab=this.activeTab, s=this.element.querySelector(`.preset-select[data-tab="${tab}"]`), n=s.value, presets=await this._getPresets(); if(presets[n]) { this.tabsState[tab].playlist=[...presets[n]]; this.tabsState[tab].currentIndex=0; await this._syncPlaylistState(tab); if(this.tabsState[tab].playlist.length>0) { this.broadcastState(tab, this.tabsState[tab].playlist[0].id, 0, true); this.updateTrackTitle(tab, this.tabsState[tab].playlist[0].title); } } }
+    async _onDeletePreset() { if(!game.user.isGM) return; const tab=this.activeTab, s=this.element.querySelector(`.preset-select[data-tab="${tab}"]`), n=s.value; if(!n)return; const presets=await this._getPresets(); if(!(n in presets)) return; delete presets[n]; await this._savePresets(presets); this.render(); }
     _onImportFromClipboard() { const tab=this.activeTab; new Dialog({title:"Import", content:`<form><div class="form-group"><label>URL</label><input type="text" name="url" style="background:#fff;color:#000"/></div></form>`, buttons:{import:{label:"Import", callback:async(h)=>{const u=h.find('input').val().trim(); await this._handleImport(tab, u);}}}}).render(true); }
 
     toggleLoop(tab, target) { this.tabsState[tab].isLooping = !this.tabsState[tab].isLooping; if(target) target.classList.toggle('active'); this.emitSocket("syncLoop", {isLooping: this.tabsState[tab].isLooping, tabId:tab}); }
@@ -565,21 +697,41 @@ class FoundryTubeApp extends HandlebarsApplicationMixin(ApplicationV2) {
     }
 
     async _fetchText(url) {
-        for (const proxy of PROXIES) {
+        for (const source of FETCH_SOURCES) {
             try {
-                const res = await fetch(proxy(url));
+                const { url: srcUrl, options } = source(url);
+                const res = await fetch(srcUrl, options);
                 if (res.ok) {
-                    if (proxy.toString().includes("allorigins")) {
-                        const json = await res.json();
-                        if (json && json.contents) return json.contents;
-                    } else {
-                        const text = await res.text();
-                        if(text.length > 100) return text;
-                    }
+                    const text = await res.text();
+                    if(text.length > 100) return text;
                 }
             } catch (e) {}
         }
         return null;
+    }
+
+    _parseLockup(v) {
+        if (!v || v.contentType !== 'LOCKUP_CONTENT_TYPE_VIDEO' || !v.contentId) return null;
+        const md = v.metadata?.lockupMetadataViewModel;
+        const title = md?.title?.content || "Video";
+        let author = "YouTube";
+        const rows = md?.metadata?.contentMetadataViewModel?.metadataRows || [];
+        for (const row of rows) {
+            for (const part of (row?.metadataParts || [])) {
+                const text = part?.text?.content;
+                if (text && !/^\d[\d.,]*[KMB]?$/.test(text) && !/(ago|^Live)$/.test(text)) { author = text; break; }
+            }
+            if (author !== "YouTube") break;
+        }
+        let duration = "0:00";
+        const scan = (obj) => {
+            if (!obj || typeof obj !== 'object') return;
+            if (obj.thumbnailBadgeViewModel?.text) { duration = obj.thumbnailBadgeViewModel.text; return; }
+            Object.values(obj).forEach(scan);
+        };
+        scan(v.contentImage);
+        const thumb = v.contentImage?.thumbnailViewModel?.image?.sources?.[0]?.url || `https://i.ytimg.com/vi/${v.contentId}/mqdefault.jpg`;
+        return { id: v.contentId, title, author, thumb, duration };
     }
 
     async _scrapeYoutubePlaylist(tab, url) {
@@ -597,6 +749,7 @@ class FoundryTubeApp extends HandlebarsApplicationMixin(ApplicationV2) {
                         if(!obj || typeof obj !== 'object') return;
                         if(obj.playlistVideoRenderer) { const v=obj.playlistVideoRenderer; videos.push({id:v.videoId,title:v.title?.runs?.[0]?.text||"Video",author:v.shortBylineText?.runs?.[0]?.text||"YouTube",thumb:v.thumbnail?.thumbnails?.[0]?.url,duration:v.lengthText?.simpleText||"0:00"}); return; }
                         if(obj.playlistPanelVideoRenderer) { const v=obj.playlistPanelVideoRenderer; videos.push({id:v.videoId,title:v.title?.simpleText||"Video",author:v.shortBylineText?.runs?.[0]?.text||"YouTube",thumb:v.thumbnail?.thumbnails?.[0]?.url,duration:v.lengthText?.simpleText||"0:00"}); return; }
+                        if(obj.lockupViewModel) { const v=this._parseLockup(obj.lockupViewModel); if(v) videos.push(v); return; }
                         Object.values(obj).forEach(val => find(val));
                     };
                     find(data);
@@ -630,6 +783,7 @@ class FoundryTubeApp extends HandlebarsApplicationMixin(ApplicationV2) {
                             res.push({ id: v.videoId, title: v.title?.runs?.[0]?.text||"Video", author: v.ownerText?.runs?.[0]?.text||"YouTube", thumb: v.thumbnail?.thumbnails?.[0]?.url, duration: v.lengthText?.simpleText||v.lengthText?.accessibility?.accessibilityData?.label||"Live" });
                             return;
                         }
+                        if(obj.lockupViewModel) { const v=this._parseLockup(obj.lockupViewModel); if(v) res.push(v); return; }
                         Object.values(obj).forEach(val => find(val));
                     };
                     find(data);
@@ -684,6 +838,11 @@ class FoundryTubeApp extends HandlebarsApplicationMixin(ApplicationV2) {
         const el = this.element.querySelector(`#track-title-text-${tabId}`);
         if (!el || !container) return;
         const safeText = text || "No Video";
+        if (el.dataset.title === safeText) {
+            if (el.classList.contains('scrolling')) return;
+            if (el.scrollWidth <= container.clientWidth) return;
+        }
+        el.dataset.title = safeText;
         el.classList.remove('scrolling');
         el.style.animationDuration = '0s';
         el.innerHTML = `<span>${safeText}</span>`;
@@ -728,7 +887,7 @@ class FoundryTubeApp extends HandlebarsApplicationMixin(ApplicationV2) {
             playerVars: { 'playsinline': 1, 'controls': 0, 'rel': 0, 'modestbranding': 1, 'iv_load_policy': 3, 'origin': window.location.origin },
             events: {
                 'onReady': (e) => {
-                    e.target.setVolume(game.settings.get(MODULE_ID, 'clientVolume'));
+                    e.target.setVolume(this._getEffectiveVolume(tab));
                     this._startProgressLoop(tab);
                     this._refreshTitle(tab, videoId);
                     const autoplay = game.settings.get(MODULE_ID, 'autoplayStart');
@@ -769,7 +928,7 @@ class FoundryTubeApp extends HandlebarsApplicationMixin(ApplicationV2) {
                 const seek = this.element.querySelector(`.tube-instance[data-tab-index="${tab}"] .video-seeker`);
                 if(time) time.innerText = this._fmt(cur);
                 if(durl) durl.innerText = this._fmt(dur);
-                if(seek) { seek.max = dur; if(document.activeElement !== seek) seek.value = cur; }
+                if(seek) { seek.max = dur; if(document.activeElement !== seek) seek.value = cur; seek.style.setProperty('--range-progress', dur ? `${(cur / dur) * 100}%` : '0%'); }
             } catch(e) {}
         }, 1000);
     }
@@ -782,6 +941,9 @@ let tubeApp;
 Hooks.once('init', () => {
     game.settings.register(MODULE_ID, 'currentVideoId', { scope: 'world', config: false, type: String, default: "" });
     game.settings.register(MODULE_ID, 'tabsState', { scope: 'world', config: false, type: Object, default: {} });
+    // Per-tab mix volume (0-100), set by the GM only. Acts like a channel fader in a mixer.
+    game.settings.register(MODULE_ID, 'tabVolumes', { scope: 'world', config: false, type: Object, default: { 0: 100, 1: 100, 2: 100, 3: 100, 4: 100 } });
+    // Player's personal master volume (0-100). Multiplies with the GM's per-tab mix to get the effective volume.
     game.settings.register(MODULE_ID, 'clientVolume', { scope: 'client', config: false, type: Number, default: 50 });
     game.settings.register(MODULE_ID, 'savedPlaylists', { scope: 'world', config: false, type: Object, default: {} });
     game.settings.register(MODULE_ID, 'autoplayStart', { name: "Auto play on Startup", hint: "If disabled, video will not start automatically when you log in.", scope: 'client', config: true, type: Boolean, default: false });
@@ -826,6 +988,20 @@ Hooks.once('ready', () => {
                 tubeApp.tabsState[tab].isShuffling = p.isShuffling;
                 const btn = tubeApp.element.querySelector(`.tube-instance[data-tab-index="${tab}"] [data-action="toggleShuffle"]`);
                 if(btn) p.isLooping ? btn.classList.add('active') : btn.classList.remove('active');
+            }
+            else if (p.action === "syncVolume") {
+                // GM changed this tab's mix volume. Players recompute their effective volume;
+                // their own master slider value never changes.
+                tubeApp.tabVolumes[tab] = p.mix;
+                tubeApp._applyVolume(tab);
+                if (game.user.isGM) {
+                    const container = tubeApp.element.querySelector(`.tube-instance[data-tab-index="${tab}"]`);
+                    const input = container?.querySelector('input[name="volume"]');
+                    if (input && document.activeElement !== input) {
+                        input.value = p.mix;
+                        input.style.setProperty('--range-progress', `${p.mix}%`);
+                    }
+                }
             }
             else if (p.action === "syncState") {
                 if (p.videoId !== tubeApp.tabsState[tab].localVideoId) {
@@ -885,6 +1061,7 @@ Hooks.once('ready', () => {
                     game.socket.emit(SOCKET_NAME, { action: "syncPlaylist", tabId: i, playlist: tubeApp.tabsState[i].playlist, index: tubeApp.tabsState[i].currentIndex });
                     game.socket.emit(SOCKET_NAME, { action: "syncLoop", tabId: i, isLooping: tubeApp.tabsState[i].isLooping });
                     game.socket.emit(SOCKET_NAME, { action: "syncShuffle", tabId: i, isShuffling: tubeApp.tabsState[i].isShuffling });
+                    game.socket.emit(SOCKET_NAME, { action: "syncVolume", tabId: i, mix: tubeApp.tabVolumes[i] ?? 100 });
                 }
             }
         });

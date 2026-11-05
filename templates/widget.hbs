@@ -42,7 +42,7 @@
                     <div class="vol-channel-group">
                         <div class="volume-group">
                             <button type="button" class="icon-btn volume-mute-btn" data-action="toggleMute" title="Mute/Unmute"><i class="fas fa-volume-up"></i></button>
-                            <input type="range" name="volume" data-tab="{{this.index}}" min="0" max="100" value="{{this.volume}}">
+                            <input type="range" name="volume" data-tab="{{this.index}}" min="0" max="100" value="{{this.volume}}" style="--range-progress: {{this.volume}}%;" title="{{#if ../isGM}}Tab {{this.humanIndex}} mix volume{{else}}Your master volume{{/if}}">
                         </div>
                         <div class="channel-switcher">
                             {{#each ../tabs}}
