@@ -238,7 +238,7 @@ class FoundryTubeApp extends HandlebarsApplicationMixin(ApplicationV2) {
                             const val = parseInt(e.target.value);
                             updateVolFill(val);
                             this.tabVolumes[i] = val;
-                            this._applyVolume(i);
+                                this._applyVolume(i, game.settings.get(MODULE_ID, 'clientVolume'));
                             if (val > 0 && this.isMuted) {
                                 this.isMuted = false;
                                 this.element.querySelectorAll('.volume-mute-btn i').forEach(ic => ic.className = "fas fa-volume-up");
